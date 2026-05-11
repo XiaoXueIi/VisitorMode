@@ -1,0 +1,158 @@
+// ================================================
+// 插件名称: VisitorMode (访客模式)
+// 功能: 新玩家进入默认为冒险模式，管理员通过 /wt 添加白名单后切换为生存模式
+// 借鉴: Scale 插件的指令结构与权限判断逻辑
+// ================================================
+
+// 配置项
+const config = {
+    // 是否允许访客（非白名单玩家）聊天
+    allowChat: false,
+    // 禁止聊天时的提示语
+    muteMessage: "[访客模式] 你当前是访客，无法发言。请联系管理添加白名单！"
+};
+
+// 白名单数据文件
+const WHITELIST_FILE = "plugins/VisitorMode/whitelist.json";
+
+// 初始化白名单
+let whitelist = [];
+if (File.exists(WHITELIST_FILE)) {
+    whitelist = JSON.parse(File.readFrom(WHITELIST_FILE) || "[]");
+} else {
+    File.mkdir("plugins/VisitorMode");
+    File.writeTo(WHITELIST_FILE, "[]");
+}
+
+// 保存白名单
+function saveWhitelist() {
+    File.writeTo(WHITELIST_FILE, JSON.stringify(whitelist, null, 2));
+}
+
+// 检查玩家是否在白名单中
+function isInWhitelist(player) {
+    return whitelist.some(entry => entry.xuid === player.xuid || entry.uuid === player.uuid);
+}
+
+// 添加玩家到白名单
+function addToWhitelist(player) {
+    if (!isInWhitelist(player)) {
+        whitelist.push({
+            name: player.realName,
+            xuid: player.xuid,
+            uuid: player.uuid
+        });
+        saveWhitelist();
+        return true;
+    }
+    return false;
+}
+
+// 将玩家设置为冒险模式（访客）
+function setVisitor(player) {
+    player.setGameMode(2); // 2 = 冒险模式
+}
+
+// 将玩家设置为生存模式（正式成员）
+function setMember(player) {
+    player.setGameMode(0); // 0 = 生存模式
+}
+
+// 辅助函数：通过名字查找玩家
+function findPlayerByName(name) {
+    let allPlayers = mc.getOnlinePlayers();
+    for (let player of allPlayers) {
+        if (player.realName === name) {
+            return player;
+        }
+    }
+    return null;
+}
+
+// 监听玩家进入游戏
+mc.listen("onJoin", (player) => {
+    if (!isInWhitelist(player)) {
+        setVisitor(player);
+        player.tell("§e[访客模式] 欢迎！当前为访客状态（冒险模式），请联系管理添加白名单以解锁生存模式。");
+    } else {
+        setMember(player);
+    }
+});
+
+// 监听玩家聊天事件
+mc.listen("onChat", (player, msg) => {
+    if (!config.allowChat && !isInWhitelist(player)) {
+        player.tell(config.muteMessage);
+        return false;
+    }
+});
+
+// ================================================
+// 注册 /wt 指令 (完全参照 Scale 插件的结构)
+// ================================================
+mc.listen("onServerStarted", function () {
+    const wt = mc.newCommand("wt", "访客插件 - 将玩家添加到白名单并切换为生存模式", PermType.GameMasters);
+    
+    // 参数定义
+    wt.optional("target", ParamType.String);  // 目标玩家名
+    
+    // 重载配置 (必须明确定义所有可能的用法组合)
+    wt.overload([]);                   // /wt - 将自己加入白名单
+    wt.overload(['target']);           // /wt <玩家名> - 将指定玩家加入白名单
+    
+    wt.setCallback(function (_cmd, ori, out, res) {
+        // 1. 判断是控制台还是玩家
+        if (!ori.player) {
+            // 控制台执行：必须指定目标玩家
+            if (!res.target) {
+                return out.error("控制台执行时必须指定玩家名，例如: wt Steve");
+            }
+            let targetPlayer = findPlayerByName(res.target);
+            if (!targetPlayer) {
+                return out.error(`找不到玩家: ${res.target}`);
+            }
+            if (addToWhitelist(targetPlayer)) {
+                setMember(targetPlayer);
+                targetPlayer.tell("§a[访客插件] 你已被添加到白名单，模式已切换为生存！");
+                logger.info(`[访客插件] 已将 ${targetPlayer.realName} 添加到白名单`);
+                return out.success(`已将 ${targetPlayer.realName} 添加到白名单`);
+            } else {
+                return out.error(`玩家 ${targetPlayer.realName} 已在白名单中`);
+            }
+        }
+        
+        // 2. 玩家执行
+        let executor = ori.player;
+        let targetName = res.target;
+        
+        // 情况1: 没有参数 - 将自己加入白名单
+        if (targetName === undefined) {
+            if (addToWhitelist(executor)) {
+                setMember(executor);
+                executor.tell("§a[访客插件] 你已被添加到白名单，模式已切换为生存！");
+                return out.success(`已将 ${executor.realName} 添加到白名单`);
+            } else {
+                return out.error(`你已在白名单中`);
+            }
+        }
+        
+        // 情况2: 有玩家名 - 将指定玩家加入白名单
+        let targetPlayer = findPlayerByName(targetName);
+        if (!targetPlayer) {
+            return out.error(`找不到玩家: ${targetName}`);
+        }
+        
+        if (addToWhitelist(targetPlayer)) {
+            setMember(targetPlayer);
+            targetPlayer.tell("§a[访客插件] 你已被添加到白名单，模式已切换为生存！");
+            executor.tell(`§a[访客插件] 已将玩家 ${targetPlayer.realName} 添加到白名单`);
+            return out.success(`已将 ${targetPlayer.realName} 添加到白名单`);
+        } else {
+            return out.error(`玩家 ${targetPlayer.realName} 已在白名单中`);
+        }
+    });
+    
+    wt.setup();
+    
+    logger.info("§a[访客插件] VisitorMode 加载完成！");
+});
